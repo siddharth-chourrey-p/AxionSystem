@@ -1,0 +1,202 @@
+name: Container Image Pipeline
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/buildAndPush.yml"
+      - "axion-data-simulator/**"
+      - "axion-ingestion-service/**"
+      - "axion-telemetry-query-service/**"
+      - "axion-ui/**"
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/buildAndPush.yml"
+      - "axion-data-simulator/**"
+      - "axion-ingestion-service/**"
+      - "axion-telemetry-query-service/**"
+      - "axion-ui/**"
+  workflow_dispatch:
+    inputs:
+      skip_scan_failure:
+        description: "Allow publishing when Trivy finds HIGH or CRITICAL vulnerabilities"
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: container-image-pipeline-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint (${{ matrix.image }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: axion-data-simulator
+            dockerfile: axion-data-simulator/Dockerfile
+          - image: axion-ingestion-service
+            dockerfile: axion-ingestion-service/Dockerfile
+          - image: axion-telemetry-query-service
+            dockerfile: axion-telemetry-query-service/Dockerfile
+          - image: axion-ui
+            dockerfile: axion-ui/Dockerfile
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5.0.0
+        with:
+          persist-credentials: false
+
+      - name: Lint Dockerfile
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: ${{ matrix.dockerfile }}
+          failure-threshold: error
+
+  build:
+    name: Build (${{ matrix.image }})
+    needs: lint
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: axion-data-simulator
+            context: axion-data-simulator
+            dockerfile: axion-data-simulator/Dockerfile
+          - image: axion-ingestion-service
+            context: axion-ingestion-service
+            dockerfile: axion-ingestion-service/Dockerfile
+          - image: axion-telemetry-query-service
+            context: axion-telemetry-query-service
+            dockerfile: axion-telemetry-query-service/Dockerfile
+          - image: axion-ui
+            context: axion-ui
+            dockerfile: axion-ui/Dockerfile
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3.9.0
+
+      - name: Build image archive
+        uses: docker/build-push-action@v6.19.0
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          tags: local/${{ matrix.image }}:${{ github.sha }}
+          outputs: type=oci,dest=/tmp/${{ matrix.image }}.tar
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+
+      - name: Upload image archive
+        uses: actions/upload-artifact@v4.6.2
+        with:
+          name: image-${{ matrix.image }}-${{ github.sha }}
+          path: /tmp/${{ matrix.image }}.tar
+          if-no-files-found: error
+          retention-days: 1
+
+  scan:
+    name: Scan (${{ matrix.image }})
+    needs: build
+    # Pull requests can opt out through the RUN_IMAGE_SCAN_ON_PR repository variable.
+    # Any value other than the literal string "false" keeps the PR scan enabled.
+    if: github.event_name != 'pull_request' || vars.RUN_IMAGE_SCAN_ON_PR != 'false'
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: axion-data-simulator
+          - image: axion-ingestion-service
+          - image: axion-telemetry-query-service
+          - image: axion-ui
+    steps:
+      - name: Download image archive
+        uses: actions/download-artifact@v5.0.0
+        with:
+          name: image-${{ matrix.image }}-${{ github.sha }}
+          path: ${{ runner.temp }}/images
+
+      - name: Scan image for HIGH and CRITICAL vulnerabilities
+        continue-on-error: ${{ github.event_name == 'workflow_dispatch' && inputs.skip_scan_failure }}
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          input: ${{ runner.temp }}/images/${{ matrix.image }}.tar
+          format: table
+          output: trivy-${{ matrix.image }}.txt
+          severity: HIGH,CRITICAL
+          exit-code: 1
+
+      - name: Upload scan report
+        if: always()
+        uses: actions/upload-artifact@v4.6.2
+        with:
+          name: trivy-${{ matrix.image }}-${{ github.sha }}
+          path: trivy-${{ matrix.image }}.txt
+          if-no-files-found: warn
+          retention-days: 1
+
+  push:
+    name: Push (${{ matrix.image }})
+    needs: scan
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      ACR_NAME: ${{ vars.ACR_NAME }}
+      AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: axion-data-simulator
+          - image: axion-ingestion-service
+          - image: axion-telemetry-query-service
+          - image: axion-ui
+    steps:
+      - name: Download scanned image archive
+        uses: actions/download-artifact@v5.0.0
+        with:
+          name: image-${{ matrix.image }}-${{ github.sha }}
+          path: ${{ runner.temp }}/images
+
+      - name: Authenticate to Azure with OIDC
+        uses: azure/login@v3.1.0
+        with:
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+          auth-type: SERVICE_PRINCIPAL
+
+      - name: Sign Docker in to ACR
+        run: az acr login --name "$ACR_NAME"
+
+      - name: Tag and push image
+        env:
+          IMAGE: ${{ matrix.image }}
+          IMAGE_ARCHIVE: ${{ runner.temp }}/images/${{ matrix.image }}.tar
+        run: |
+          docker load --input "$IMAGE_ARCHIVE"
+          image_ref="${ACR_NAME}.azurecr.io/${IMAGE}"
+          docker tag "local/${IMAGE}:${GITHUB_SHA}" "${image_ref}:${GITHUB_SHA}"
+          docker push "${image_ref}:${GITHUB_SHA}"
+          docker tag "${image_ref}:${GITHUB_SHA}" "${image_ref}:latest"
+          docker push "${image_ref}:latest"

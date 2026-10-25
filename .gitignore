@@ -8,8 +8,6 @@ acr_cred.txt
 # Excluded project assets & documentation
 manifest/
 runbook.txt
-.github/workflows/
-*/.github/workflows/
 
 # OS Metadata
 .DS_Store
