@@ -1,0 +1,13 @@
+---
+description: Secure implementation pattern for Axion container CI/CD workflows
+globs: .github/workflows/*.{yml,yaml}
+alwaysApply: false
+---
+
+# Container CI/CD implementation pattern
+
+- Make CI/CD changes on a dedicated `feat/` branch and begin with an implementation plan.
+- Use separate lint, build, scan, and publish jobs; use matrices for independent image builds and pushes.
+- Keep publish credentials isolated to the final trusted publish job. Prefer GitHub OIDC and short-lived cloud credentials over stored secrets.
+- Pull requests must validate without cloud authentication or publishing. Keep vulnerability gates fail-closed unless an explicitly documented manual override is required.
+- Pin third-party actions to exact release versions and give workflow jobs the minimum permissions needed.
