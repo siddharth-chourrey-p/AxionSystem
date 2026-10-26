@@ -136,18 +136,8 @@ jobs:
         with:
           input: ${{ runner.temp }}/images/${{ matrix.image }}.tar
           format: table
-          output: trivy-${{ matrix.image }}.txt
           severity: HIGH,CRITICAL
           exit-code: 1
-
-      - name: Upload scan report
-        if: always()
-        uses: actions/upload-artifact@v4.6.2
-        with:
-          name: trivy-${{ matrix.image }}-${{ github.sha }}
-          path: trivy-${{ matrix.image }}.txt
-          if-no-files-found: warn
-          retention-days: 1
 
   push:
     name: Push (${{ matrix.image }})
