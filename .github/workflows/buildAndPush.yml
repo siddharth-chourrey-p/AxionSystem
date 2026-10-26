@@ -95,7 +95,8 @@ jobs:
           context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
           tags: local/${{ matrix.image }}:${{ github.sha }}
-          outputs: type=oci,dest=/tmp/${{ matrix.image }}.tar
+          # Trivy's archive input and `docker load` both require Docker archive metadata.
+          outputs: type=docker,dest=/tmp/${{ matrix.image }}.tar
           cache-from: type=gha,scope=${{ matrix.image }}
           cache-to: type=gha,mode=max,scope=${{ matrix.image }}
 
